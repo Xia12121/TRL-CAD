@@ -1,0 +1,4 @@
+{"text":"cube([10,10,10]);"}
+{"text":"translate([0,0,5]) sphere(r=3);"}
+{"text":"difference() { cube([20,20,20], center=true); sphere(r=8); }"}
+{"text":"module leg(h=20){ cylinder(h=h, r=2); }\nfor(i=[0:3]) translate([i*8,0,0]) leg();"}

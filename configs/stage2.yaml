@@ -1,0 +1,36 @@
+model_name: outputs/stage1
+dataset_path: data/samples/stage2_instruction.jsonl
+output_dir: outputs/stage2
+require_peft_checkpoint: true
+
+# Weights & Biases monitoring
+wb_project: trl-cad
+wb_group: default-experiment
+wb_notes: "Stage2 instruction SFT with CoT"
+
+# Data and CoT
+cot_field: cot
+include_cot: true
+allow_cot_fallback_fields: true
+streaming: false
+cache_dir: null
+keep_in_memory: false
+num_proc: 4
+load_from_cache_file: true
+
+max_seq_length: 1536
+response_template: "<|assistant|>\n"
+batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4
+epochs: 3
+logging_steps: 10
+save_steps: 200
+bf16: true
+packing: false
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, up_proj, down_proj, gate_proj]

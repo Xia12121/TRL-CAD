@@ -1,0 +1,2 @@
+{"prompt":"生成一个边长30mm的立方体，中间挖空一个半径8mm的球形空间","scad_code":"difference() {\n  cube([30,30,30], center=true);\n  sphere(r=8);\n}"}
+{"prompt":"生成一个简单桌子：桌面和四条腿","cot":"先定义腿模块，再组合桌面和四个角落的腿，确保尺寸一致。","scad_code":"module leg(x,y){ translate([x,y,0]) cube([4,4,40]); }\nunion(){\n  translate([0,0,40]) cube([60,40,4]);\n  leg(0,0); leg(56,0); leg(0,36); leg(56,36);\n}"}

@@ -1,0 +1,43 @@
+model_name: outputs/stage2
+dataset_path: data/samples/stage3_grpo_prompts.jsonl
+output_dir: outputs/stage3
+require_peft_checkpoint: true
+
+# Weights & Biases monitoring
+wb_project: trl-cad
+wb_group: default-experiment
+wb_notes: "Stage3 GRPO + RLVR reinforcement learning"
+
+# GRPO
+batch_size: 4
+gradient_accumulation_steps: 1
+learning_rate: 5.0e-6
+grpo_epochs: 2
+max_prompt_length: 512
+max_new_tokens: 384
+num_generations: 4
+beta: 0.04
+logging_steps: 10
+save_steps: 200
+
+# RLVR（可验证奖励）
+verify_with_openscad: false
+openscad_bin: null
+min_len: 40
+max_len: 3500
+dedup_window_size: 1024
+
+# 大数据加载
+streaming: false
+cache_dir: null
+keep_in_memory: false
+num_proc: 4
+load_from_cache_file: true
+
+bf16: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, up_proj, down_proj, gate_proj]
