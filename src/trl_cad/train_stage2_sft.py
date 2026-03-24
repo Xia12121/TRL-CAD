@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import yaml
 import wandb
@@ -12,15 +11,7 @@ from peft import LoraConfig
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
 from .data import load_stage2_dataset
-
-
-def _is_local_peft_checkpoint(model_name: str) -> bool:
-    p = Path(model_name)
-    return p.exists() and (p / "adapter_config.json").exists()
-
-
-def _is_local_path(model_name: str) -> bool:
-    return Path(model_name).exists()
+from .utils import is_local_path, is_local_peft_checkpoint
 
 
 def main() -> None:
@@ -69,14 +60,14 @@ def main() -> None:
     )
 
     require_peft_checkpoint = cfg.get("require_peft_checkpoint", False)
-    if require_peft_checkpoint and not _is_local_peft_checkpoint(cfg["model_name"]):
+    if require_peft_checkpoint and not is_local_peft_checkpoint(cfg["model_name"]):
         raise ValueError(
             "Stage2 requires continuing from a PEFT checkpoint, but model_name is not a valid adapter directory: {}".format(
                 cfg['model_name']
             )
         )
 
-    if _is_local_peft_checkpoint(cfg["model_name"]):
+    if is_local_peft_checkpoint(cfg["model_name"]):
         print("[Stage2] Continuing from PEFT checkpoint: {}".format(cfg['model_name']))
         model = AutoPeftModelForCausalLM.from_pretrained(
             cfg["model_name"],
@@ -85,7 +76,7 @@ def main() -> None:
         )
         trainer_peft_config = None
     else:
-        source_kind = "local base-model directory" if _is_local_path(cfg["model_name"]) else "remote model id"
+        source_kind = "local base-model directory" if is_local_path(cfg["model_name"]) else "remote model id"
         print("[Stage2] Loading from {} and attaching new LoRA: {}".format(source_kind, cfg["model_name"]))
         model = AutoModelForCausalLM.from_pretrained(
             cfg["model_name"],

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -12,15 +11,7 @@ from trl import GRPOConfig, GRPOTrainer
 
 from .data import load_stage3_prompts
 from .reward import RewardConfig, score_scad_rlvr
-
-
-def _is_local_peft_checkpoint(model_name: str) -> bool:
-    p = Path(model_name)
-    return p.exists() and (p / "adapter_config.json").exists()
-# 这个函数在 stage2 和 stage3 中都用到了，暂时放在这里。后续如果有更多地方需要用到，可以考虑移到 utils.py 或 data.py 中。
-
-def _is_local_path(model_name: str) -> bool:
-    return Path(model_name).exists()
+from .utils import is_local_path, is_local_peft_checkpoint
 
 
 def _normalize_completion_text(item: Any) -> str:
@@ -80,14 +71,14 @@ def main() -> None:
     )
 
     require_peft_checkpoint = cfg.get("require_peft_checkpoint", False)
-    if require_peft_checkpoint and not _is_local_peft_checkpoint(cfg["model_name"]):
+    if require_peft_checkpoint and not is_local_peft_checkpoint(cfg["model_name"]):
         raise ValueError(
             "Stage3 requires continuing from a PEFT checkpoint, but model_name is not a valid adapter directory: {}".format(
                 cfg['model_name']
             )
         )
 
-    if _is_local_peft_checkpoint(cfg["model_name"]):
+    if is_local_peft_checkpoint(cfg["model_name"]):
         print("[Stage3] Continuing from PEFT checkpoint: {}".format(cfg['model_name']))
         model = AutoPeftModelForCausalLM.from_pretrained(
             cfg["model_name"],
@@ -96,7 +87,7 @@ def main() -> None:
         )
         trainer_peft_config = None
     else:
-        source_kind = "local base-model directory" if _is_local_path(cfg["model_name"]) else "remote model id"
+        source_kind = "local base-model directory" if is_local_path(cfg["model_name"]) else "remote model id"
         print("[Stage3] Loading from {} and attaching new LoRA: {}".format(source_kind, cfg["model_name"]))
         model = AutoModelForCausalLM.from_pretrained(
             cfg["model_name"],
@@ -110,11 +101,28 @@ def main() -> None:
         min_len=cfg.get("min_len", 40),
         max_len=cfg.get("max_len", 3500),
         dedup_window_size=cfg.get("dedup_window_size", 1024),
+        compile_success_reward=cfg.get("compile_success_reward", 1.0),
+        compile_syntax_error_penalty=cfg.get("compile_syntax_error_penalty", -1.0),
+        compile_warning_penalty=cfg.get("compile_warning_penalty", -0.35),
+        compile_empty_geometry_penalty=cfg.get("compile_empty_geometry_penalty", -0.2),
+        compile_runtime_error_penalty=cfg.get("compile_runtime_error_penalty", -0.6),
+        module_definition_bonus=cfg.get("module_definition_bonus", 0.2),
+        module_call_bonus=cfg.get("module_call_bonus", 0.2),
+        for_loop_bonus=cfg.get("for_loop_bonus", 0.2),
+        transform_diversity_bonus=cfg.get("transform_diversity_bonus", 0.2),
+        hardcode_repeat_penalty=cfg.get("hardcode_repeat_penalty", -0.25),
+        hardcode_repeat_threshold=cfg.get("hardcode_repeat_threshold", 6),
     )
-    seen_hashes: set[str] = set()
+
+    if reward_cfg.verify_with_openscad and not reward_cfg.openscad_bin:
+        raise ValueError("verify_with_openscad=true requires openscad_bin to be set.")
+    if not reward_cfg.verify_with_openscad:
+        print("[Stage3] OpenSCAD verification is disabled; reward uses static shaping only.")
 
     def rlvr_reward(prompts, completions, raw_prompt=None, **kwargs):
         prompt_refs = raw_prompt if raw_prompt is not None else prompts
+        # batch-local dedup keeps reward stationary across steps.
+        seen_hashes: set[str] = set()
         scores: list[float] = []
         for p, c in zip(prompt_refs, completions):
             prompt_text = str(p)

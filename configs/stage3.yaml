@@ -27,6 +27,21 @@ min_len: 40
 max_len: 3500
 dedup_window_size: 1024
 
+# Tiered compile rewards
+compile_success_reward: 1.0
+compile_syntax_error_penalty: -1.0
+compile_warning_penalty: -0.35
+compile_empty_geometry_penalty: -0.2
+compile_runtime_error_penalty: -0.6
+
+# Static-analysis shaping
+module_definition_bonus: 0.2
+module_call_bonus: 0.2
+for_loop_bonus: 0.2
+transform_diversity_bonus: 0.2
+hardcode_repeat_penalty: -0.25
+hardcode_repeat_threshold: 6
+
 # 大数据加载
 streaming: false
 cache_dir: null

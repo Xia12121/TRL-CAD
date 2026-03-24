@@ -1,7 +1,5 @@
 # TRL-CAD
 
-本文档使用 UTF-8 编码。
-
 该项目使用 TRL + PEFT 训练开源 LLM 生成 OpenSCAD 代码，分三阶段：
 
 1. Stage1：SCAD 语料 LM 式持续预训练
