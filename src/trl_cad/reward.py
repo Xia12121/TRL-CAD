@@ -61,6 +61,48 @@ SCAD_START_PATTERNS = [
 
 SCAD_START_RE = re.compile("|".join(f"(?:{p})" for p in SCAD_START_PATTERNS), re.IGNORECASE)
 
+SCAD_BUILTIN_CALLS = {
+    "cube",
+    "sphere",
+    "cylinder",
+    "polyhedron",
+    "polygon",
+    "circle",
+    "square",
+    "text",
+    "import",
+    "surface",
+    "translate",
+    "rotate",
+    "scale",
+    "resize",
+    "mirror",
+    "multmatrix",
+    "color",
+    "offset",
+    "hull",
+    "minkowski",
+    "render",
+    "projection",
+    "linear_extrude",
+    "rotate_extrude",
+    "union",
+    "difference",
+    "intersection",
+    "for",
+    "if",
+    "let",
+}
+
+ERROR_TOKEN_RE = re.compile(r"\b(error|errors)\b")
+NEGATIVE_ERROR_PHRASE_RE = re.compile(r"\b(?:no|without|zero|0)\s+errors?\b")
+
+
+def _strip_scad_comments(code: str) -> str:
+    code = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
+    code = re.sub(r"//.*$", "", code, flags=re.MULTILINE)
+    return code
+
 
 @dataclass
 class RewardConfig:
@@ -82,6 +124,32 @@ class RewardConfig:
     transform_diversity_bonus: float = 0.2
     hardcode_repeat_penalty: float = -0.25
     hardcode_repeat_threshold: int = 6
+    dedup_repeat_penalty: float = 0.0
+
+PROMPT_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "using",
+    "make",
+    "create",
+    "build",
+    "model",
+    "design",
+    "object",
+    "shape",
+    "please",
+    "need",
+    "want",
+    "add",
+    "then",
+    "generate",
+}
 
 
 @dataclass
@@ -145,6 +213,24 @@ def _balanced_brackets(code: str) -> bool:
     return not stack
 
 
+def _bracket_balance_score(code: str) -> tuple[float, int]:
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack: list[str] = []
+    mismatch = 0
+    for ch in code:
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in pairs:
+            if stack and stack[-1] == pairs[ch]:
+                stack.pop()
+            else:
+                mismatch += 1
+    imbalance = mismatch + len(stack)
+    if imbalance == 0:
+        return 1.0, 0
+    return max(-1.2, -0.3 * imbalance), imbalance
+
+
 def _hash_prefix(text: str, n: int) -> str:
     return hashlib.md5(text[:n].encode("utf-8", errors="ignore")).hexdigest()
 
@@ -172,7 +258,7 @@ def _parse_compile_signal(ok: bool, log: str) -> dict[str, bool]:
     log_lower = log.lower()
     syntax_error = "syntax error" in log_lower or "parser error" in log_lower
     has_warning = "warning" in log_lower
-    has_error = "error" in log_lower
+    has_error = bool(ERROR_TOKEN_RE.search(log_lower)) and not bool(NEGATIVE_ERROR_PHRASE_RE.search(log_lower))
     empty_geometry = (
         "top level object is empty" in log_lower
         or "current top level object is empty" in log_lower
@@ -195,14 +281,17 @@ def _transform_stats(code: str) -> tuple[int, int]:
 
 
 def _module_stats(code: str) -> tuple[int, int]:
-    defs = re.findall(r"\bmodule\s+([A-Za-z_]\w*)\s*\(", code)
-    if not defs:
+    code_no_comments = _strip_scad_comments(code)
+    defs = re.findall(r"\bmodule\s+([A-Za-z_]\w*)\s*\(", code_no_comments)
+    user_defs = [name for name in defs if name.lower() not in SCAD_BUILTIN_CALLS]
+    unique_defs = set(user_defs)
+    if not unique_defs:
         return 0, 0
     calls = 0
-    for name in set(defs):
-        refs = len(re.findall(rf"\b{name}\s*\(", code))
+    for name in unique_defs:
+        refs = len(re.findall(rf"\b{name}\s*\(", code_no_comments))
         calls += max(0, refs - 1)
-    return len(defs), calls
+    return len(user_defs), calls
 
 
 def _max_repeated_hardcoded_transform_lines(code: str) -> int:
@@ -217,11 +306,24 @@ def _max_repeated_hardcoded_transform_lines(code: str) -> int:
 
 
 def _extract_prompt_keywords(query: str) -> set[str]:
-    words = {w.lower() for w in re.findall(r"[a-zA-Z_]+", query) if len(w) > 2}
+    words = {
+        w.lower()
+        for w in re.findall(r"[a-zA-Z_]+", query)
+        if len(w) > 2 and w.lower() not in PROMPT_STOPWORDS and w.lower() not in SCAD_KEYWORDS
+    }
     # keep a small CAD hint list for non-English prompts
     for kw in ["hex", "honeycomb", "vase", "phone", "stand", "thickness", "hole"]:
         if kw in query.lower():
             words.add(kw)
+    return words
+
+
+def _extract_scad_identifiers(code: str) -> set[str]:
+    words = {
+        w.lower()
+        for w in re.findall(r"[a-zA-Z_]+", code)
+        if len(w) > 2 and w.lower() not in PROMPT_STOPWORDS and w.lower() not in SCAD_KEYWORDS
+    }
     return words
 
 
@@ -270,8 +372,10 @@ def score_scad_rlvr(
 
     # A) deterministic syntax checks
     balanced = _balanced_brackets(text)
+    bracket_score, bracket_imbalance = _bracket_balance_score(text)
     info["balanced_brackets"] = balanced
-    reward += 1.0 if balanced else -1.2
+    info["bracket_imbalance"] = bracket_imbalance
+    reward += bracket_score
 
     semicolon_ok = text.count(";") >= 1
     info["has_semicolon"] = semicolon_ok
@@ -284,10 +388,12 @@ def score_scad_rlvr(
 
     # C) lexical overlap with prompt
     q_words = _extract_prompt_keywords(query)
-    g_words = {w.lower() for w in re.findall(r"[a-zA-Z_]+", text) if len(w) > 2}
+    g_words = _extract_scad_identifiers(text)
     overlap = len(q_words & g_words)
     info["prompt_overlap"] = overlap
-    reward += min(overlap / 10.0, 0.8)
+    overlap_ratio = (overlap / max(4, len(q_words))) if q_words else 0.0
+    info["prompt_overlap_ratio"] = overlap_ratio
+    reward += min(overlap_ratio, 0.6)
 
     # D) length constraints
     n = len(text)
@@ -319,7 +425,7 @@ def score_scad_rlvr(
 
     repeated_transform_max = _max_repeated_hardcoded_transform_lines(text)
     info["max_repeated_transform_lines"] = repeated_transform_max
-    if repeated_transform_max >= cfg.hardcode_repeat_threshold and not has_for_loop:
+    if repeated_transform_max >= cfg.hardcode_repeat_threshold:
         reward += cfg.hardcode_repeat_penalty
 
     # F) dedup penalty against reward hacking
@@ -328,7 +434,7 @@ def score_scad_rlvr(
         duplicated = prefix_hash in seen_hashes
         info["dedup_hit"] = duplicated
         if duplicated:
-            reward -= 0.5
+            reward += cfg.dedup_repeat_penalty
         else:
             seen_hashes.add(prefix_hash)
 

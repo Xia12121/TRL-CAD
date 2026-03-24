@@ -14,18 +14,19 @@ gradient_accumulation_steps: 1
 learning_rate: 5.0e-6
 grpo_epochs: 2
 max_prompt_length: 512
-max_new_tokens: 384
-num_generations: 4
+max_new_tokens: 768
+num_generations: 8
 beta: 0.04
 logging_steps: 10
 save_steps: 200
 
 # RLVR（可验证奖励）
-verify_with_openscad: false
-openscad_bin: null
+verify_with_openscad: true
+openscad_bin: openscad
 min_len: 40
 max_len: 3500
 dedup_window_size: 1024
+dedup_repeat_penalty: 0.0
 
 # Tiered compile rewards
 compile_success_reward: 1.0

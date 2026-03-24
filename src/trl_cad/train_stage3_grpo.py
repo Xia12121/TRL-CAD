@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import shutil
 from typing import Any
 
 import yaml
@@ -96,8 +98,8 @@ def main() -> None:
         trainer_peft_config = lora_cfg
 
     reward_cfg = RewardConfig(
-        openscad_bin=cfg.get("openscad_bin", None),
-        verify_with_openscad=cfg.get("verify_with_openscad", False),
+        openscad_bin=cfg.get("openscad_bin", None) or shutil.which("openscad"),
+        verify_with_openscad=cfg.get("verify_with_openscad", True),
         min_len=cfg.get("min_len", 40),
         max_len=cfg.get("max_len", 3500),
         dedup_window_size=cfg.get("dedup_window_size", 1024),
@@ -112,26 +114,40 @@ def main() -> None:
         transform_diversity_bonus=cfg.get("transform_diversity_bonus", 0.2),
         hardcode_repeat_penalty=cfg.get("hardcode_repeat_penalty", -0.25),
         hardcode_repeat_threshold=cfg.get("hardcode_repeat_threshold", 6),
+        dedup_repeat_penalty=cfg.get("dedup_repeat_penalty", 0.0),
     )
 
-    if reward_cfg.verify_with_openscad and not reward_cfg.openscad_bin:
-        raise ValueError("verify_with_openscad=true requires openscad_bin to be set.")
     if not reward_cfg.verify_with_openscad:
-        print("[Stage3] OpenSCAD verification is disabled; reward uses static shaping only.")
+        raise ValueError(
+            "Stage3 reward requires OpenSCAD verification. Set verify_with_openscad=true."
+        )
+    if not reward_cfg.openscad_bin:
+        raise ValueError(
+            "OpenSCAD executable not found. Set openscad_bin explicitly or install openscad in PATH."
+        )
+
+    # process-local dedup state is kept for monitoring only; no order-dependent reward penalty.
+    seen_hashes: set[str] = set()
 
     def rlvr_reward(prompts, completions, raw_prompt=None, **kwargs):
         prompt_refs = raw_prompt if raw_prompt is not None else prompts
-        # batch-local dedup keeps reward stationary across steps.
-        seen_hashes: set[str] = set()
+        prompt_texts = [str(p) for p in prompt_refs]
+        completion_texts = [_normalize_completion_text(c) for c in completions]
+
+        group_hashes = [
+            hashlib.md5(t[: reward_cfg.dedup_window_size].encode("utf-8", errors="ignore")).hexdigest()
+            for t in completion_texts
+        ]
+        for prefix_hash in group_hashes:
+            seen_hashes.add(prefix_hash)
+
         scores: list[float] = []
-        for p, c in zip(prompt_refs, completions):
-            prompt_text = str(p)
-            completion_text = _normalize_completion_text(c)
+        for prompt_text, completion_text in zip(prompt_texts, completion_texts):
             score, _ = score_scad_rlvr(
                 prompt_text,
                 completion_text,
                 cfg=reward_cfg,
-                seen_hashes=seen_hashes,
+                seen_hashes=None,
             )
             scores.append(float(score))
         return scores
@@ -143,8 +159,8 @@ def main() -> None:
         learning_rate=cfg.get("learning_rate", 5.0e-6),
         num_train_epochs=cfg.get("grpo_epochs", 1),
         max_prompt_length=cfg.get("max_prompt_length", 512),
-        max_completion_length=cfg.get("max_new_tokens", 384),
-        num_generations=cfg.get("num_generations", 4),
+        max_completion_length=cfg.get("max_new_tokens", 768),
+        num_generations=cfg.get("num_generations", 8),
         beta=cfg.get("beta", 0.04),
         logging_steps=cfg.get("logging_steps", 10),
         save_steps=cfg.get("save_steps", 200),
