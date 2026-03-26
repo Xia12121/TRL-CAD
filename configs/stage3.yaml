@@ -20,28 +20,26 @@ beta: 0.04
 logging_steps: 10
 save_steps: 200
 
-# RLVR（可验证奖励）
+# RLVR（简化三段奖励）
 verify_with_openscad: true
 openscad_bin: openscad
-min_len: 40
-max_len: 3500
-dedup_window_size: 1024
-dedup_repeat_penalty: 0.0
+openscad_timeout_sec: 20
 
-# Tiered compile rewards
-compile_success_reward: 1.0
-compile_syntax_error_penalty: -1.0
-compile_warning_penalty: -0.35
-compile_empty_geometry_penalty: -0.2
-compile_runtime_error_penalty: -0.6
+# 1) 编译 + 非空几何
+compile_non_empty_reward: 1.2
+compile_failure_penalty: -1.0
+compile_empty_geometry_penalty: -1.2
 
-# Static-analysis shaping
-module_definition_bonus: 0.2
-module_call_bonus: 0.2
-for_loop_bonus: 0.2
-transform_diversity_bonus: 0.2
-hardcode_repeat_penalty: -0.25
-hardcode_repeat_threshold: 6
+# 2) 输出格式（是否有 CoT / <think>）
+format_ok_reward: 0.3
+format_missing_think_penalty: -0.3
+
+# 3) 语义奖励（Stage2 prompt + scad 用 CLIP 方法训练的 BERT 双塔模型）
+semantic_model_path: outputs/semantic_clip
+require_semantic_model: true
+semantic_similarity_weight: 1.0
+semantic_unavailable_reward: 0.0
+semantic_max_length: 256
 
 # 大数据加载
 streaming: false

@@ -3,4 +3,5 @@
 __all__ = [
     "prompts",
     "reward",
+    "semantic_reward",
 ]

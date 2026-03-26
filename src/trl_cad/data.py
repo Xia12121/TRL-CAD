@@ -202,6 +202,24 @@ def load_stage2_dataset(
     )
 
 
+def load_stage2_pairs(
+    path: str | list[str],
+    *,
+    streaming: bool = False,
+    cache_dir: str | None = None,
+    keep_in_memory: bool = False,
+) -> HFDataset:
+    """Stage2 prompt/scad pair dataset for semantic contrastive training."""
+    ds = _load_json_dataset(
+        path,
+        streaming=streaming,
+        cache_dir=cache_dir,
+        keep_in_memory=keep_in_memory,
+    )
+    _ensure_required_columns(ds, {"prompt", "scad_code"}, "Stage2-pairs")
+    return ds
+
+
 def load_stage3_prompts(
     path: str | list[str],
     *,

@@ -1,0 +1,17 @@
+# Train a BERT-like dual-encoder with CLIP-style contrastive loss
+model_name: bert-base-uncased
+dataset_path: data/samples/stage2_instruction.jsonl
+output_dir: outputs/semantic_clip
+
+batch_size: 16
+epochs: 2
+learning_rate: 2.0e-5
+logging_steps: 20
+
+projection_dim: 256
+temperature: 0.07
+max_length: 256
+
+streaming: false
+cache_dir: null
+keep_in_memory: false

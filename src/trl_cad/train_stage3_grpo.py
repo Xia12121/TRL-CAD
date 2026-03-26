@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import shutil
 from typing import Any
 
@@ -100,21 +99,16 @@ def main() -> None:
     reward_cfg = RewardConfig(
         openscad_bin=cfg.get("openscad_bin", None) or shutil.which("openscad"),
         verify_with_openscad=cfg.get("verify_with_openscad", True),
-        min_len=cfg.get("min_len", 40),
-        max_len=cfg.get("max_len", 3500),
-        dedup_window_size=cfg.get("dedup_window_size", 1024),
-        compile_success_reward=cfg.get("compile_success_reward", 1.0),
-        compile_syntax_error_penalty=cfg.get("compile_syntax_error_penalty", -1.0),
-        compile_warning_penalty=cfg.get("compile_warning_penalty", -0.35),
-        compile_empty_geometry_penalty=cfg.get("compile_empty_geometry_penalty", -0.2),
-        compile_runtime_error_penalty=cfg.get("compile_runtime_error_penalty", -0.6),
-        module_definition_bonus=cfg.get("module_definition_bonus", 0.2),
-        module_call_bonus=cfg.get("module_call_bonus", 0.2),
-        for_loop_bonus=cfg.get("for_loop_bonus", 0.2),
-        transform_diversity_bonus=cfg.get("transform_diversity_bonus", 0.2),
-        hardcode_repeat_penalty=cfg.get("hardcode_repeat_penalty", -0.25),
-        hardcode_repeat_threshold=cfg.get("hardcode_repeat_threshold", 6),
-        dedup_repeat_penalty=cfg.get("dedup_repeat_penalty", 0.0),
+        openscad_timeout_sec=cfg.get("openscad_timeout_sec", 20),
+        compile_non_empty_reward=cfg.get("compile_non_empty_reward", 1.2),
+        compile_failure_penalty=cfg.get("compile_failure_penalty", -1.0),
+        compile_empty_geometry_penalty=cfg.get("compile_empty_geometry_penalty", -1.2),
+        format_ok_reward=cfg.get("format_ok_reward", 0.3),
+        format_missing_think_penalty=cfg.get("format_missing_think_penalty", -0.3),
+        semantic_model_path=cfg.get("semantic_model_path", None),
+        semantic_similarity_weight=cfg.get("semantic_similarity_weight", 1.0),
+        semantic_unavailable_reward=cfg.get("semantic_unavailable_reward", 0.0),
+        semantic_max_length=cfg.get("semantic_max_length", 256),
     )
 
     if not reward_cfg.verify_with_openscad:
@@ -126,20 +120,14 @@ def main() -> None:
             "OpenSCAD executable not found. Set openscad_bin explicitly or install openscad in PATH."
         )
 
-    # process-local dedup state is kept for monitoring only; no order-dependent reward penalty.
-    seen_hashes: set[str] = set()
+    require_semantic_model = cfg.get("require_semantic_model", True)
+    if require_semantic_model and not reward_cfg.semantic_model_path:
+        raise ValueError("Stage3 requires semantic_model_path when require_semantic_model=true")
 
     def rlvr_reward(prompts, completions, raw_prompt=None, **kwargs):
         prompt_refs = raw_prompt if raw_prompt is not None else prompts
         prompt_texts = [str(p) for p in prompt_refs]
         completion_texts = [_normalize_completion_text(c) for c in completions]
-
-        group_hashes = [
-            hashlib.md5(t[: reward_cfg.dedup_window_size].encode("utf-8", errors="ignore")).hexdigest()
-            for t in completion_texts
-        ]
-        for prefix_hash in group_hashes:
-            seen_hashes.add(prefix_hash)
 
         scores: list[float] = []
         for prompt_text, completion_text in zip(prompt_texts, completion_texts):
