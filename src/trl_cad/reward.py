@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# reward.py 作用：
+# 1) 解析模型输出（可含 <think>...</think>）并提取 SCAD 代码主体
+# 2) 对 SCAD 进行多维打分（语法、结构、相关性、去重、可选编译验证）
+# 3) 返回 (reward, info) 供 GRPO 训练使用
+
 import hashlib
 import os
 import re
@@ -22,6 +27,9 @@ SCAD_KEYWORDS = {
     "polygon",
     "module",
 }
+
+# 这些模式用于在 <think> 未闭合时，尽量识别“代码从哪里开始”。
+# 目的：避免把合法 SCAD 误当成 think 文本吞掉。
 
 SCAD_START_PATTERNS = [
     r"module\s+[A-Za-z_]\w*\s*\(",
@@ -94,11 +102,16 @@ SCAD_BUILTIN_CALLS = {
     "let",
 }
 
+# 解析 OpenSCAD 日志时使用：
+# - ERROR_TOKEN_RE 检测 error/errors 词
+# - NEGATIVE_ERROR_PHRASE_RE 用于排除 “no errors” 这类否定短语，减少误判
+
 ERROR_TOKEN_RE = re.compile(r"\b(error|errors)\b")
 NEGATIVE_ERROR_PHRASE_RE = re.compile(r"\b(?:no|without|zero|0)\s+errors?\b")
 
 
 def _strip_scad_comments(code: str) -> str:
+    """移除 SCAD 注释，避免注释内容干扰规则统计（如 module/call 计数）。"""
     code = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
     code = re.sub(r"//.*$", "", code, flags=re.MULTILINE)
     return code
@@ -106,6 +119,13 @@ def _strip_scad_comments(code: str) -> str:
 
 @dataclass
 class RewardConfig:
+    """奖励配置。
+
+    说明：
+    - compile_*：OpenSCAD 外部验证相关奖励/惩罚（强约束）
+    - module/for/transform/hardcode：静态结构奖励（弱到中等约束）
+    - dedup_repeat_penalty：重复样本的惩罚（默认 0，表示关闭）
+    """
     openscad_bin: str | None = None
     verify_with_openscad: bool = False
     min_len: int = 40
@@ -154,16 +174,28 @@ PROMPT_STOPWORDS = {
 
 @dataclass
 class ParsedOutput:
+    """模型输出解析结果。
+
+    think: 推理文本（若存在）
+    scad: 代码文本（后续评分只基于它）
+    format_clean: 是否是标准 <think>...</think> + SCAD 格式
+    """
     think: str
     scad: str
     format_clean: bool
 
 
 def parse_think_and_scad(text: str) -> ParsedOutput:
-    """Split model output into think content and SCAD code."""
+    """从模型输出中分离 think 与 SCAD。
+
+    解析策略：
+    1) 标准格式：<think>...</think> + 代码
+    2) think 未闭合：尝试用 SCAD 起始模式切分
+    3) 无 think 标签：整段当作 SCAD
+    """
     text = text.strip()
 
-    # case 1: clean <think>...</think> + scad
+    # 情况1：标准格式
     match = re.search(r"<think>(.*?)</think>(.*)", text, re.DOTALL)
     if match:
         return ParsedOutput(
@@ -172,7 +204,7 @@ def parse_think_and_scad(text: str) -> ParsedOutput:
             format_clean=True,
         )
 
-    # case 2: open <think> only, try to find SCAD start
+    # 情况2：只有 <think> 起始，未闭合；尝试识别代码起点
     match = re.search(r"<think>(.*)", text, re.DOTALL)
     if match:
         remaining = match.group(1)
@@ -184,7 +216,7 @@ def parse_think_and_scad(text: str) -> ParsedOutput:
                 format_clean=False,
             )
 
-        # fallback: if it already looks like code-ish text, avoid swallowing valid SCAD.
+        # 兜底：若 remaining 已经“看起来像代码”，整段作为 SCAD，避免误吞有效代码。
         has_code_markers = (
             any(k in remaining.lower() for k in SCAD_KEYWORDS)
             or ";" in remaining
@@ -196,11 +228,12 @@ def parse_think_and_scad(text: str) -> ParsedOutput:
 
         return ParsedOutput(think=remaining.strip(), scad="", format_clean=False)
 
-    # case 3: no think tag, treat all as SCAD
+    # 情况3：没有 think 标签，整体当 SCAD
     return ParsedOutput(think="", scad=text, format_clean=False)
 
 
 def _balanced_brackets(code: str) -> bool:
+    """严格括号匹配：用于布尔判断（True/False）。"""
     pairs = {')': '(', ']': '[', '}': '{'}
     stack = []
     for ch in code:
@@ -214,6 +247,12 @@ def _balanced_brackets(code: str) -> bool:
 
 
 def _bracket_balance_score(code: str) -> tuple[float, int]:
+    """柔性括号得分：
+
+    返回 (score, imbalance)
+    - imbalance=0 -> +1.0
+    - 失配越多，分数越低，最低裁剪到 -1.2
+    """
     pairs = {")": "(", "]": "[", "}": "{"}
     stack: list[str] = []
     mismatch = 0
@@ -232,10 +271,17 @@ def _bracket_balance_score(code: str) -> tuple[float, int]:
 
 
 def _hash_prefix(text: str, n: int) -> str:
+    """计算前缀哈希：用于重复样本检测（anti-reward-hacking）。"""
     return hashlib.md5(text[:n].encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _verify_with_openscad(code: str, openscad_bin: str) -> tuple[bool, str]:
+    """调用 OpenSCAD 编译验证。
+
+    返回：
+    - ok: 是否成功生成 STL
+    - log: stdout+stderr 合并日志
+    """
     with tempfile.TemporaryDirectory(prefix="trl_cad_rlvr_") as td:
         scad_path = os.path.join(td, "candidate.scad")
         out_path = os.path.join(td, "candidate.stl")
@@ -255,6 +301,7 @@ def _verify_with_openscad(code: str, openscad_bin: str) -> tuple[bool, str]:
 
 
 def _parse_compile_signal(ok: bool, log: str) -> dict[str, bool]:
+    """将 OpenSCAD 日志解析成结构化信号，供分层奖励使用。"""
     log_lower = log.lower()
     syntax_error = "syntax error" in log_lower or "parser error" in log_lower
     has_warning = "warning" in log_lower
@@ -273,6 +320,11 @@ def _parse_compile_signal(ok: bool, log: str) -> dict[str, bool]:
 
 
 def _transform_stats(code: str) -> tuple[int, int]:
+    """统计变换操作：
+
+    total: translate/rotate/scale 总次数
+    diversity: 三类中出现了几类（多样性）
+    """
     transforms = ["translate", "rotate", "scale"]
     counts = {t: len(re.findall(rf"\b{t}\s*\(", code)) for t in transforms}
     total = sum(counts.values())
@@ -281,6 +333,11 @@ def _transform_stats(code: str) -> tuple[int, int]:
 
 
 def _module_stats(code: str) -> tuple[int, int]:
+    """统计用户自定义 module 的定义和调用。
+
+    - 会先去注释，避免注释文本干扰
+    - 会排除内建调用名，避免误计
+    """
     code_no_comments = _strip_scad_comments(code)
     defs = re.findall(r"\bmodule\s+([A-Za-z_]\w*)\s*\(", code_no_comments)
     user_defs = [name for name in defs if name.lower() not in SCAD_BUILTIN_CALLS]
@@ -295,6 +352,10 @@ def _module_stats(code: str) -> tuple[int, int]:
 
 
 def _max_repeated_hardcoded_transform_lines(code: str) -> int:
+    """检测重复硬编码 transform 行的最大重复次数。
+
+    用于惩罚“复制粘贴式”堆代码，鼓励用循环表达结构。
+    """
     lines = [ln.strip() for ln in code.splitlines() if ln.strip()]
     transform_lines = [
         ln for ln in lines
@@ -306,12 +367,13 @@ def _max_repeated_hardcoded_transform_lines(code: str) -> int:
 
 
 def _extract_prompt_keywords(query: str) -> set[str]:
+    """从 prompt 提取关键词（去停用词、去 SCAD 关键字）。"""
     words = {
         w.lower()
         for w in re.findall(r"[a-zA-Z_]+", query)
         if len(w) > 2 and w.lower() not in PROMPT_STOPWORDS and w.lower() not in SCAD_KEYWORDS
     }
-    # keep a small CAD hint list for non-English prompts
+    # 对中英混合 prompt 给一些 CAD 语义提示词兜底
     for kw in ["hex", "honeycomb", "vase", "phone", "stand", "thickness", "hole"]:
         if kw in query.lower():
             words.add(kw)
@@ -319,6 +381,7 @@ def _extract_prompt_keywords(query: str) -> set[str]:
 
 
 def _extract_scad_identifiers(code: str) -> set[str]:
+    """从 SCAD 中提取标识词，用于与 prompt 关键词做弱语义重合。"""
     words = {
         w.lower()
         for w in re.findall(r"[a-zA-Z_]+", code)
@@ -334,7 +397,13 @@ def score_scad_rlvr(
     cfg: RewardConfig | None = None,
     seen_hashes: set[str] | None = None,
 ) -> tuple[float, dict]:
-    """RLVR reward: deterministic checks + semantic overlap + structural quality."""
+    """主奖励函数（GRPO 用）。
+
+    核心原则：
+    - 先分离 think/scad，再只对 scad 打分
+    - 多维奖励相加：语法 + 语义弱相关 + 结构质量 + 可选编译验证
+    - 返回 info 便于调参与诊断
+    """
     cfg = cfg or RewardConfig()
     info: dict[str, float | int | bool | str] = {}
     raw_text = generated.strip()
@@ -350,13 +419,15 @@ def score_scad_rlvr(
 
     reward = 0.0
 
-    # format compliance shaping
+    # 0) 输出格式奖励：
+    #    - 标准 <think>...</think> 小幅加分
+    #    - 有 think 但格式坏掉小幅扣分
     if parsed.format_clean:
         reward += 0.15
     elif parsed.think:
         reward -= 0.2
 
-    # think degeneration guard
+    # 1) think 质量约束：防止过短敷衍/过长灌水
     think_len = len(parsed.think.split())
     if parsed.think:
         if think_len > 250:
@@ -367,26 +438,30 @@ def score_scad_rlvr(
             info["think_too_short"] = True
 
     if not text:
+        # 没有可评分代码，直接重罚并返回
         info["scad_empty"] = True
         return float(reward - 1.5), info
 
-    # A) deterministic syntax checks
+    # 2) 语法可验证奖励（deterministic）
+    #    2.1 括号平衡（柔性分）
     balanced = _balanced_brackets(text)
     bracket_score, bracket_imbalance = _bracket_balance_score(text)
     info["balanced_brackets"] = balanced
     info["bracket_imbalance"] = bracket_imbalance
     reward += bracket_score
 
+    #    2.2 分号基础检查
     semicolon_ok = text.count(";") >= 1
     info["has_semicolon"] = semicolon_ok
     reward += 0.35 if semicolon_ok else -0.2
 
-    # B) keyword coverage (weak supervision)
+    # 3) SCAD 关键词覆盖（弱监督）：鼓励包含基本建模语义
     found = sum(1 for k in SCAD_KEYWORDS if re.search(rf"\b{k}\b", text))
     info["keyword_found"] = found
     reward += min(found / 6.0, 1.0)
 
-    # C) lexical overlap with prompt
+    # 4) Prompt-代码弱语义对齐（词面重合，非强语义）
+    #    使用 overlap_ratio，避免 prompt 很长时绝对值失真
     q_words = _extract_prompt_keywords(query)
     g_words = _extract_scad_identifiers(text)
     overlap = len(q_words & g_words)
@@ -395,7 +470,7 @@ def score_scad_rlvr(
     info["prompt_overlap_ratio"] = overlap_ratio
     reward += min(overlap_ratio, 0.6)
 
-    # D) length constraints
+    # 5) 长度约束：过短通常信息不足，过长可能冗余/跑偏
     n = len(text)
     info["length"] = n
     if n < cfg.min_len:
@@ -403,7 +478,8 @@ def score_scad_rlvr(
     elif n > cfg.max_len:
         reward -= 0.5
 
-    # E) structural/static-analysis shaping
+    # 6) 结构奖励（静态分析）
+    #    6.1 module 定义与调用：鼓励可复用结构
     module_defs, module_calls = _module_stats(text)
     info["module_defs"] = module_defs
     info["module_calls"] = module_calls
@@ -412,23 +488,26 @@ def score_scad_rlvr(
     if module_calls > 0:
         reward += cfg.module_call_bonus
 
+    #    6.2 for 循环：鼓励程序化生成而非重复硬编码
     has_for_loop = bool(re.search(r"\bfor\s*\(", text))
     info["has_for_loop"] = has_for_loop
     if has_for_loop:
         reward += cfg.for_loop_bonus
 
+    #    6.3 变换多样性：至少两种变换时加分
     transform_total, transform_diversity = _transform_stats(text)
     info["transform_count"] = transform_total
     info["transform_diversity"] = transform_diversity
     if transform_diversity >= 2:
         reward += cfg.transform_diversity_bonus
 
+    #    6.4 重复硬编码惩罚：同类 transform 行重复过多扣分
     repeated_transform_max = _max_repeated_hardcoded_transform_lines(text)
     info["max_repeated_transform_lines"] = repeated_transform_max
     if repeated_transform_max >= cfg.hardcode_repeat_threshold:
         reward += cfg.hardcode_repeat_penalty
 
-    # F) dedup penalty against reward hacking
+    # 7) 去重项：抑制模板化重复刷分（当前默认 penalty=0 即关闭）
     if seen_hashes is not None:
         prefix_hash = _hash_prefix(text, cfg.dedup_window_size)
         duplicated = prefix_hash in seen_hashes
@@ -438,7 +517,9 @@ def score_scad_rlvr(
         else:
             seen_hashes.add(prefix_hash)
 
-    # G) strong verification via OpenSCAD (optional)
+    # 8) OpenSCAD 强验证（可选）：
+    #    - 编译成功奖励
+    #    - 语法错误/警告/空几何/运行错误分层惩罚
     if cfg.verify_with_openscad and cfg.openscad_bin:
         ok, log = _verify_with_openscad(text, cfg.openscad_bin)
         compile_signal = _parse_compile_signal(ok, log)
@@ -462,6 +543,6 @@ def score_scad_rlvr(
 
 
 def score_scad(query: str, generated: str) -> float:
-    # 兼容旧接口
+    # 兼容旧接口：仅返回标量分数
     score, _ = score_scad_rlvr(query, generated)
     return score
