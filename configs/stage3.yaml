@@ -22,6 +22,10 @@ save_steps: 200
 
 # RLVR（简化三段奖励）
 verify_with_openscad: true
+# OpenSCAD 可执行文件路径：
+# - 若已加入 PATH，可保持 openscad
+# - Windows 常见示例：C:/Program Files/OpenSCAD/openscad.exe
+# - 或者：C:/Program Files (x86)/OpenSCAD/openscad.exe
 openscad_bin: openscad
 openscad_timeout_sec: 20
 

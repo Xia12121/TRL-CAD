@@ -1,5 +1,5 @@
 # Train a BERT-like dual-encoder with CLIP-style contrastive loss
-model_name: bert-base-uncased
+model_name: microsoft/codebert-base
 dataset_path: data/samples/stage2_instruction.jsonl
 output_dir: outputs/semantic_clip
 
