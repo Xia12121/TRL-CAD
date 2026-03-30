@@ -3,15 +3,37 @@ model_name: microsoft/codebert-base
 dataset_path: data/samples/stage2_instruction.jsonl
 output_dir: outputs/semantic_clip
 
-batch_size: 16
-epochs: 2
+# Weights & Biases monitoring
+wb_project: trl-cad
+wb_group: default-experiment
+wb_notes: "Semantic CLIP dual-encoder with contrastive loss"
+
+# Training hyperparameters - larger batch size is critical for contrastive learning
+batch_size: 64                # Increased from 16 - more negatives = better learning signal
+epochs: 10
 learning_rate: 2.0e-5
+weight_decay: 0.01
 logging_steps: 20
 
+# Learning rate scheduling
+warmup_ratio: 0.1             # Warmup first 10% of training
+# Cosine decay is implemented in code automatically
+
+# Validation and early stopping
+val_ratio: 0.1                # Use 10% of data for validation
+early_stopping_patience: 3    # Stop if val loss doesn't improve for 3 epochs
+
+# Partial fine-tuning (set to 0 to train all parameters, >0 to freeze bottom N layers)
+# For small datasets (<5k samples), recommend: freeze_encoder_layers: 6
+# For medium datasets, recommend: freeze_encoder_layers: 0 (full fine-tune)
+freeze_encoder_layers: 0      # 0 = full fine-tune, set to 6-8 for small data
+
+# Model architecture
 projection_dim: 256
 temperature: 0.07
 max_length: 256
 
+# Data loading
 streaming: false
 cache_dir: null
 keep_in_memory: false

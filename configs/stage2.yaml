@@ -20,12 +20,14 @@ load_from_cache_file: true
 
 max_seq_length: 1536
 response_template: "<|assistant|>\n"
+completion_only_loss: true
 batch_size: 2
 gradient_accumulation_steps: 8
 learning_rate: 1.0e-4
 epochs: 3
 logging_steps: 10
 save_steps: 200
+warmup_steps: 100
 bf16: true
 packing: false
 

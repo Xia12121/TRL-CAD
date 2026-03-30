@@ -1,17 +1,37 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
 
 
-def _run_module(module: str, *args: str) -> None:
-    cmd = [sys.executable, "-m", module, *args]
-    print("[RUN]", " ".join(cmd))
-    result = subprocess.run(cmd, cwd=ROOT)
+def _run_module(module: str, *args: str, num_gpus: int = 1) -> None:
+    env = dict(os.environ)
+    pythonpath = str(SRC)
+    if "PYTHONPATH" in env:
+        pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+    env["PYTHONPATH"] = pythonpath
+    
+    if num_gpus > 1:
+        # 使用 torchrun 进行多GPU分布式训练
+        cmd = [
+            "torchrun",
+            f"--nproc_per_node={num_gpus}",
+            "-m",
+            module,
+            *args
+        ]
+        print(f"[RUN] PYTHONPATH={env['PYTHONPATH']} {' '.join(cmd)} (DDP with {num_gpus} GPUs)")
+    else:
+        cmd = [sys.executable, "-m", module, *args]
+        print(f"[RUN] PYTHONPATH={env['PYTHONPATH']} {' '.join(cmd)}")
+    
+    result = subprocess.run(cmd, cwd=ROOT, env=env)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
 
@@ -24,15 +44,19 @@ def main() -> None:
 
     p1 = subparsers.add_parser("stage1", help="Stage1: SCAD corpus pretraining")
     p1.add_argument("--config", default="configs/stage1.yaml")
+    p1.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use (DDP if >1)")
 
     p2 = subparsers.add_parser("stage2", help="Stage2: instruction SFT with CoT")
     p2.add_argument("--config", default="configs/stage2.yaml")
+    p2.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use (DDP if >1)")
 
     p3 = subparsers.add_parser("stage3", help="Stage3: GRPO + RLVR training")
     p3.add_argument("--config", default="configs/stage3.yaml")
+    p3.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use (DDP if >1)")
 
     psem = subparsers.add_parser("semantic", help="Train semantic CLIP-style scorer")
     psem.add_argument("--config", default="configs/semantic_clip.yaml")
+    psem.add_argument("--num-gpus", type=int, default=1, help="Number of GPUs to use (DDP if >1)")
 
     pg = subparsers.add_parser("generate", help="Generate SCAD code from prompt")
     pg.add_argument("--model", default="outputs/stage3")
@@ -53,13 +77,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "stage1":
-        _run_module("trl_cad.train_stage1_lm", "--config", args.config)
+        _run_module("trl_cad.train_stage1_lm", "--config", args.config, num_gpus=args.num_gpus)
     elif args.command == "stage2":
-        _run_module("trl_cad.train_stage2_sft", "--config", args.config)
+        _run_module("trl_cad.train_stage2_sft", "--config", args.config, num_gpus=args.num_gpus)
     elif args.command == "stage3":
-        _run_module("trl_cad.train_stage3_grpo", "--config", args.config)
+        _run_module("trl_cad.train_stage3_grpo", "--config", args.config, num_gpus=args.num_gpus)
     elif args.command == "semantic":
-        _run_module("trl_cad.train_semantic_clip", "--config", args.config)
+        _run_module("trl_cad.train_semantic_clip", "--config", args.config, num_gpus=args.num_gpus)
     elif args.command == "generate":
         _run_module(
             "trl_cad.generate",

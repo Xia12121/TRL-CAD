@@ -4,9 +4,9 @@ import argparse
 import yaml
 import wandb
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 from .data import load_stage1_dataset
 
@@ -56,7 +56,7 @@ def main() -> None:
         task_type="CAUSAL_LM",
     )
 
-    train_args = TrainingArguments(
+    train_args = SFTConfig(
         output_dir=cfg["output_dir"],
         per_device_train_batch_size=cfg["batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
@@ -66,20 +66,19 @@ def main() -> None:
         save_steps=cfg["save_steps"],
         bf16=cfg.get("bf16", False),
         fp16=cfg.get("fp16", False),
-        warmup_ratio=cfg.get("warmup_ratio", 0.03),
+        warmup_steps=cfg.get("warmup_steps", 100),
         lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine"),
         report_to="wandb",
+        packing=cfg.get("packing", True),
+        max_length=cfg.get("max_seq_length", 1024),
     )
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
         peft_config=lora_cfg,
         args=train_args,
-        max_seq_length=cfg["max_seq_length"],
-        packing=cfg.get("packing", True),
     )
 
     trainer.train()

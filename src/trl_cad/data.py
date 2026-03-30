@@ -6,7 +6,7 @@ from typing import Callable
 
 from datasets import Dataset, IterableDataset, load_dataset
 
-from .prompts import format_rl_query, format_sft_example, format_sft_example_with_cot
+from .prompts import format_rl_query
 
 
 HFDataset = Dataset | IterableDataset
@@ -186,11 +186,16 @@ def load_stage2_dataset(
 
     def _map_fn(row):
         cot = _pick_cot(row)
+        prompt = format_rl_query(str(row["prompt"]))
+        scad = str(row["scad_code"]).strip()
         if include_cot and cot:
-            text = format_sft_example_with_cot(row["prompt"], cot, row["scad_code"])
+            completion = "<think>\n{}\n</think>\n{}".format(str(cot).strip(), scad)
         else:
-            text = format_sft_example(row["prompt"], row["scad_code"])
-        return {"text": text}
+            completion = scad
+        return {
+            "prompt": prompt,
+            "completion": completion,
+        }
 
     return _safe_map(
         ds,

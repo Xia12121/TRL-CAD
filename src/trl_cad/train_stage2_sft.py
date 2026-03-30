@@ -6,9 +6,9 @@ import yaml
 import wandb
 
 from peft import AutoPeftModelForCausalLM
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
-from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 from .data import load_stage2_dataset
 from .utils import is_local_path, is_local_peft_checkpoint
@@ -84,7 +84,7 @@ def main() -> None:
         )
         trainer_peft_config = lora_cfg
 
-    train_args = TrainingArguments(
+    train_args = SFTConfig(
         output_dir=cfg["output_dir"],
         per_device_train_batch_size=cfg["batch_size"],
         gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
@@ -94,30 +94,20 @@ def main() -> None:
         save_steps=cfg["save_steps"],
         bf16=cfg.get("bf16", False),
         fp16=cfg.get("fp16", False),
-        warmup_ratio=cfg.get("warmup_ratio", 0.03),
+        warmup_steps=cfg.get("warmup_steps", 100),
         lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine"),
+        completion_only_loss=cfg.get("completion_only_loss", True),
         report_to="wandb",
+        packing=False,
+        max_length=cfg.get("max_seq_length", 1024),
     )
-
-    response_template = cfg.get("response_template", "<|assistant|>\n")
-    completion_only_collator = DataCollatorForCompletionOnlyLM(
-        response_template=response_template,
-        tokenizer=tokenizer,
-    )
-
-    # completion-only loss is incompatible with packing; sample boundaries must be preserved.
-    packing = False
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
-        data_collator=completion_only_collator,
         peft_config=trainer_peft_config,
         args=train_args,
-        max_seq_length=cfg["max_seq_length"],
-        packing=packing,
     )
 
     trainer.train()
